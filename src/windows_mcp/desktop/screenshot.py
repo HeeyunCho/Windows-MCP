@@ -515,10 +515,10 @@ def shutdown_dxcam() -> None:
 
 
 # Order matters: atexit runs handlers last-in, first-out. Importing comtypes (via
-# dxcam and windows_mcp.uia at the top of this module) registers comtypes'
-# own ``_shutdown`` handler, which calls CoUninitialize. Registering this one
-# afterwards makes it run first, so cameras are released while COM is still up.
-# Keep those imports above this line.
+# windows_mcp.uia at the top of this module; dxcam itself loads lazily) registers
+# comtypes' own ``_shutdown`` handler, which calls CoUninitialize. Registering
+# this one afterwards makes it run first, so cameras are released while COM is
+# still up. Keep the uia import above this line.
 atexit.register(shutdown_dxcam)
 
 
