@@ -481,11 +481,37 @@ def test_module_shutdown_shuts_down_the_cached_dxcam_backend(
 def test_cameras_are_released_when_the_interpreter_exits() -> None:
     child = textwrap.dedent(
         """
+        import ctypes
+        import sys
+
         from windows_mcp.desktop import screenshot
+
+        S_OK, S_FALSE, RPC_E_CHANGED_MODE = 0, 1, -2147417850  # 0x80010106
+
+        def com_state():
+            # comtypes' atexit _shutdown calls CoUninitialize and then sets this
+            # flag, after which comtypes skips Release() on every COM pointer it
+            # frees, dxcam's DXGI objects included. windows_mcp.uia's own
+            # CoInitialize keeps the apartment open past that, so the flag is what
+            # shows the wrong order here. Looked up, not imported: importing
+            # comtypes in this script would register its handler first.
+            unknwn = sys.modules.get("comtypes._post_coinit.unknwn")
+            if unknwn is None or unknwn._cominterface_meta._com_shutting_down:
+                return "down"
+            # Joining the apartment tells whether it is still open: S_FALSE (or a
+            # mode mismatch) means it is; S_OK means it had been closed and this
+            # call opened a new one. Successful calls are balanced.
+            flags = getattr(sys, "coinit_flags", 2)  # comtypes' default: APARTMENTTHREADED
+            hr = ctypes.windll.ole32.CoInitializeEx(None, flags)
+            if hr in (S_OK, S_FALSE):
+                ctypes.windll.ole32.CoUninitialize()
+            if hr in (S_FALSE, RPC_E_CHANGED_MODE):
+                return "up"
+            return "down" if hr == S_OK else f"hr={hr & 0xFFFFFFFF:#010x}"
 
         class MarkerCamera:
             def release(self):
-                print("CAMERA-RELEASED", flush=True)
+                print(f"CAMERA-RELEASED COM={com_state()}", flush=True)
 
         backend = screenshot._DxcamBackend()
         backend._camera_cache[(0, 0)] = MarkerCamera()
@@ -508,5 +534,7 @@ def test_cameras_are_released_when_the_interpreter_exits() -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.split() == ["EXITING", "CAMERA-RELEASED"]
+    # COM=up: the camera was released before comtypes' own atexit handler called
+    # CoUninitialize, the order a real DXGI release needs.
+    assert result.stdout.splitlines() == ["EXITING", "CAMERA-RELEASED COM=up"]
     assert result.stderr.strip() == ""
